@@ -1,5 +1,5 @@
 streamlit
-google-generativeai
+requests
 Pillow
 pandas
 numpy
