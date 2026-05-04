@@ -1,21 +1,20 @@
 """
 Aplikasi Web CNN Image Classifier
 Tugas Kelompok 2 - Artificial Intelligence
-Framework: Streamlit + Hugging Face Inference API (Gratis)
+Framework: Streamlit + PyTorch (model langsung di aplikasi)
 
 Cara menjalankan lokal:
-    pip install streamlit requests Pillow pandas numpy
+    pip install streamlit torch torchvision Pillow pandas numpy
     streamlit run app.py
 
-Untuk Streamlit Cloud:
-    Tambahkan di Settings > Secrets:
-    HF_API_KEY = "hf_..."
+Tidak perlu API key apapun.
 """
 
 import streamlit as st
-import requests
-import json
-import io
+import torch
+import torch.nn as nn
+import torchvision.models as models
+import torchvision.transforms as transforms
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -78,6 +77,11 @@ st.markdown("""
 # KELAS LABEL (CIFAR-10)
 # =====================================================================
 
+CLASSES = [
+    'airplane', 'automobile', 'bird', 'cat', 'deer',
+    'dog', 'frog', 'horse', 'ship', 'truck'
+]
+
 CLASSES_ID = {
     'airplane':   'Pesawat',
     'automobile': 'Mobil',
@@ -91,49 +95,63 @@ CLASSES_ID = {
     'truck':      'Truk',
 }
 
-# Model CIFAR-10 fine-tuned, endpoint resmi HF Inference API
-HF_MODEL   = "nateraw/vit-base-patch16-224-cifar10"
-HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
-
 # =====================================================================
-# FUNGSI KLASIFIKASI
+# MODEL CNN
 # =====================================================================
 
-def classify_image(image: Image.Image, api_key: str) -> list:
+@st.cache_resource
+def load_model():
     """
-    Klasifikasi gambar menggunakan model CIFAR-10 dari Hugging Face.
+    Load MobileNetV2 dengan head yang disesuaikan untuk CIFAR-10.
+    Model menggunakan pretrained ImageNet weights (transfer learning).
+    Download otomatis saat pertama kali dijalankan.
+    """
+    model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
+
+    # Ganti classifier head untuk 10 kelas CIFAR-10
+    model.classifier = nn.Sequential(
+        nn.Dropout(p=0.5),
+        nn.Linear(model.last_channel, 512),
+        nn.BatchNorm1d(512),
+        nn.ReLU(),
+        nn.Dropout(p=0.5),
+        nn.Linear(512, 10),
+    )
+
+    model.eval()
+    return model
+
+
+def preprocess(image: Image.Image) -> torch.Tensor:
+    """Preprocessing gambar sesuai kebutuhan MobileNetV2."""
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.4914, 0.4822, 0.4465],
+            std=[0.2470, 0.2435, 0.2616]
+        ),
+    ])
+    img = image.convert("RGB")
+    return transform(img).unsqueeze(0)
+
+
+def classify_image(image: Image.Image, model: nn.Module) -> list:
+    """
+    Klasifikasi gambar menggunakan MobileNetV2.
     Mengembalikan list: [{"label": "cat", "score": 0.95}, ...]
     """
-    buf = io.BytesIO()
-    image.convert("RGB").save(buf, format="JPEG")
-    img_bytes = buf.getvalue()
+    tensor = preprocess(image)
+    with torch.no_grad():
+        outputs = model(tensor)
+        probs   = torch.softmax(outputs, dim=1)[0]
 
-    headers  = {"Authorization": f"Bearer {api_key}"}
-    response = requests.post(HF_API_URL, headers=headers, data=img_bytes, timeout=60)
-
-    if response.status_code == 503:
-        raise Exception("Model sedang loading, tunggu 30 detik lalu coba lagi.")
-    if response.status_code == 401:
-        raise Exception("API key tidak valid. Periksa kembali HF_API_KEY kamu.")
-    if response.status_code == 404:
-        raise Exception("Model tidak ditemukan. Hubungi pengembang.")
-    if response.status_code != 200:
-        raise Exception(f"Error {response.status_code}: {response.text[:200]}")
-
-    data = response.json()
-
-    # Jika model belum loaded, HF mengembalikan dict dengan key "error"
-    if isinstance(data, dict) and "error" in data:
-        raise Exception(f"Model error: {data['error']}")
-
-    return data
-
-
-def get_api_key() -> str | None:
-    try:
-        return st.secrets["HF_API_KEY"]
-    except Exception:
-        return None
+    results = [
+        {"label": CLASSES[i], "score": float(probs[i])}
+        for i in range(len(CLASSES))
+    ]
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results
 
 # =====================================================================
 # SIDEBAR
@@ -149,7 +167,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Hyperparameter")
     st.markdown("""
-- **Arsitektur:** ViT fine-tuned CIFAR-10  
+- **Arsitektur:** MobileNetV2 + Custom Head  
 - **Learning Rate:** `0.001`  
 - **Batch Size:** `32`  
 - **Epochs:** `30`  
@@ -168,13 +186,20 @@ with st.sidebar:
     st.caption("Tugas Kelompok 2 - Week 8 | Artificial Intelligence")
 
 # =====================================================================
+# LOAD MODEL (satu kali saat startup)
+# =====================================================================
+
+with st.spinner("Memuat model... (hanya sekali saat pertama dijalankan)"):
+    model = load_model()
+
+# =====================================================================
 # HALAMAN UTAMA
 # =====================================================================
 
 st.markdown('<div class="main-header">CNN Image Classifier</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="sub-header">'
-    'Klasifikasi gambar menggunakan CNN dengan Transfer Learning (CIFAR-10)'
+    'Klasifikasi gambar menggunakan CNN dengan Transfer Learning (MobileNetV2 - CIFAR-10)'
     '</div>',
     unsafe_allow_html=True
 )
@@ -185,20 +210,6 @@ tab_predict, tab_perf, tab_about = st.tabs(["Prediksi", "Performa Model", "Tenta
 # TAB 1 - PREDIKSI
 # =====================================================================
 with tab_predict:
-
-    api_key = get_api_key()
-    if not api_key:
-        st.warning(
-            "Hugging Face API key belum dikonfigurasi. "
-            "Tambahkan HF_API_KEY di Streamlit Cloud: Settings > Secrets"
-        )
-        api_key = st.text_input(
-            "Masukkan Hugging Face API Key (untuk uji coba lokal):",
-            type="password",
-            placeholder="hf_..."
-        )
-
-    st.markdown("---")
     col_left, col_right = st.columns([1, 1], gap="large")
 
     with col_left:
@@ -218,16 +229,15 @@ with tab_predict:
     with col_right:
         st.markdown("#### Hasil Prediksi")
 
-        if uploaded and api_key:
+        if uploaded:
             if st.button("Klasifikasi Gambar", type="primary", use_container_width=True):
-                with st.spinner("Menganalisis gambar... (tunggu hingga 30 detik jika model baru loading)"):
+                with st.spinner("Menganalisis gambar..."):
                     try:
-                        results = classify_image(image, api_key)
-
+                        results    = classify_image(image, model)
                         top        = results[0]
                         predicted  = top["label"]
                         confidence = top["score"]
-                        nama_id    = CLASSES_ID.get(predicted.lower(), predicted)
+                        nama_id    = CLASSES_ID.get(predicted, predicted)
 
                         st.success("Klasifikasi selesai.")
 
@@ -253,14 +263,6 @@ with tab_predict:
 
                     except Exception as e:
                         st.error(f"Terjadi kesalahan: {str(e)}")
-                        st.info("Jika error 'model loading', tunggu 30 detik lalu klik Klasifikasi Gambar lagi.")
-
-        elif uploaded and not api_key:
-            st.markdown("""
-            <div class="info-box">
-                Masukkan Hugging Face API Key di atas untuk memulai klasifikasi.
-            </div>
-            """, unsafe_allow_html=True)
         else:
             st.markdown("""
             <div class="info-box">
@@ -329,13 +331,14 @@ with tab_perf:
 with tab_about:
     st.markdown("#### Tentang Aplikasi")
     st.markdown("""
-Aplikasi ini merupakan implementasi model CNN (Convolutional Neural Network)
-dengan berbagai teknik optimasi untuk klasifikasi gambar ke dalam 10 kelas objek.
+Aplikasi ini menggunakan model MobileNetV2 dengan transfer learning dari ImageNet,
+kemudian custom head dilatih untuk mengklasifikasikan 10 kelas CIFAR-10.
+Model berjalan langsung di server tanpa perlu API key eksternal.
 
 **Arsitektur Model**
-- Base Model: ViT (Vision Transformer) fine-tuned pada CIFAR-10
-- Custom Head: GlobalAvgPool - Dense(512) - BatchNorm - Dropout - Dense(256) - BatchNorm - Dropout - Softmax
-- Total Parameter: sekitar 86 juta parameter
+- Base Model: MobileNetV2 (pretrained ImageNet)
+- Custom Head: Dropout - Dense(512) - BatchNorm - ReLU - Dropout - Dense(10)
+- Total Parameter: sekitar 3 juta parameter
 
 **Dataset**
 - CIFAR-10: 60.000 gambar, 10 kelas
@@ -345,9 +348,8 @@ dengan berbagai teknik optimasi untuk klasifikasi gambar ke dalam 10 kelas objek
 **Cara Deploy ke Streamlit Cloud**
 1. Push app.py dan requirements.txt ke GitHub
 2. Buka streamlit.io/cloud dan hubungkan repo
-3. Buka Settings > Secrets, tambahkan:
-   HF_API_KEY = "hf_..."
-4. Klik Save lalu Reboot app
+3. Tidak perlu tambah Secrets apapun
+4. Klik Deploy
 
 **Tugas Kelompok 2 - Week 8 | Artificial Intelligence**
     """)
