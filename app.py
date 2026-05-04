@@ -106,7 +106,7 @@ def classify_image(image: Image.Image, api_key: str) -> dict:
     Mengembalikan dict berisi kelas prediksi dan probabilitas.
     """
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-1.5-flash-8b")
 
     prompt = f"""Kamu adalah model CNN (Convolutional Neural Network) yang dilatih pada dataset CIFAR-10.
 Dataset CIFAR-10 memiliki 10 kelas berikut:
