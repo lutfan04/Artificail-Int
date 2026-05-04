@@ -79,21 +79,20 @@ st.markdown("""
 # =====================================================================
 
 CLASSES_ID = {
-    'airplane':    'Pesawat',
-    'automobile':  'Mobil',
-    'bird':        'Burung',
-    'cat':         'Kucing',
-    'deer':        'Rusa',
-    'dog':         'Anjing',
-    'frog':        'Katak',
-    'horse':       'Kuda',
-    'ship':        'Kapal',
-    'truck':       'Truk',
+    'airplane':   'Pesawat',
+    'automobile': 'Mobil',
+    'bird':       'Burung',
+    'cat':        'Kucing',
+    'deer':       'Rusa',
+    'dog':        'Anjing',
+    'frog':       'Katak',
+    'horse':      'Kuda',
+    'ship':       'Kapal',
+    'truck':      'Truk',
 }
 
-# Model CIFAR-10 yang tersedia gratis di Hugging Face
-# Trained on CIFAR-10 dataset — output langsung 10 kelas
-HF_MODEL = "aaraki/vit-base-patch16-224-in21k-finetuned-cifar10"
+# Model CIFAR-10 fine-tuned, endpoint resmi HF Inference API
+HF_MODEL   = "nateraw/vit-base-patch16-224-cifar10"
 HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
 # =====================================================================
@@ -103,29 +102,34 @@ HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 def classify_image(image: Image.Image, api_key: str) -> list:
     """
     Klasifikasi gambar menggunakan model CIFAR-10 dari Hugging Face.
-    Mengembalikan list of dict: [{"label": "cat", "score": 0.95}, ...]
+    Mengembalikan list: [{"label": "cat", "score": 0.95}, ...]
     """
-    # Konversi gambar ke bytes
     buf = io.BytesIO()
-    img = image.convert("RGB")
-    img.save(buf, format="JPEG")
+    image.convert("RGB").save(buf, format="JPEG")
     img_bytes = buf.getvalue()
 
-    headers = {"Authorization": f"Bearer {api_key}"}
-    response = requests.post(HF_API_URL, headers=headers, data=img_bytes, timeout=30)
+    headers  = {"Authorization": f"Bearer {api_key}"}
+    response = requests.post(HF_API_URL, headers=headers, data=img_bytes, timeout=60)
 
     if response.status_code == 503:
-        raise Exception("Model sedang loading, tunggu 20 detik lalu coba lagi.")
+        raise Exception("Model sedang loading, tunggu 30 detik lalu coba lagi.")
     if response.status_code == 401:
         raise Exception("API key tidak valid. Periksa kembali HF_API_KEY kamu.")
+    if response.status_code == 404:
+        raise Exception("Model tidak ditemukan. Hubungi pengembang.")
     if response.status_code != 200:
-        raise Exception(f"Error {response.status_code}: {response.text}")
+        raise Exception(f"Error {response.status_code}: {response.text[:200]}")
 
-    return response.json()
+    data = response.json()
+
+    # Jika model belum loaded, HF mengembalikan dict dengan key "error"
+    if isinstance(data, dict) and "error" in data:
+        raise Exception(f"Model error: {data['error']}")
+
+    return data
 
 
 def get_api_key() -> str | None:
-    """Ambil API key dari Streamlit secrets atau input manual."""
     try:
         return st.secrets["HF_API_KEY"]
     except Exception:
@@ -145,7 +149,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Hyperparameter")
     st.markdown("""
-- **Arsitektur:** MobileNetV2 + Custom Head  
+- **Arsitektur:** ViT fine-tuned CIFAR-10  
 - **Learning Rate:** `0.001`  
 - **Batch Size:** `32`  
 - **Epochs:** `30`  
@@ -216,12 +220,11 @@ with tab_predict:
 
         if uploaded and api_key:
             if st.button("Klasifikasi Gambar", type="primary", use_container_width=True):
-                with st.spinner("Menganalisis gambar..."):
+                with st.spinner("Menganalisis gambar... (tunggu hingga 30 detik jika model baru loading)"):
                     try:
                         results = classify_image(image, api_key)
 
-                        # Ambil prediksi teratas
-                        top = results[0]
+                        top        = results[0]
                         predicted  = top["label"]
                         confidence = top["score"]
                         nama_id    = CLASSES_ID.get(predicted.lower(), predicted)
@@ -239,17 +242,18 @@ with tab_predict:
                         st.markdown("#### Distribusi Probabilitas (Top 5)")
                         for rank, item in enumerate(results[:5]):
                             name  = item["label"].capitalize()
-                            score = item["score"]
+                            score = float(item["score"])
                             col_name, col_bar, col_pct = st.columns([2, 3, 1])
                             with col_name:
                                 st.markdown(f"**{name}**" if rank == 0 else name)
                             with col_bar:
-                                st.progress(float(score))
+                                st.progress(score)
                             with col_pct:
                                 st.markdown(f"{score * 100:.1f}%")
 
                     except Exception as e:
                         st.error(f"Terjadi kesalahan: {str(e)}")
+                        st.info("Jika error 'model loading', tunggu 30 detik lalu klik Klasifikasi Gambar lagi.")
 
         elif uploaded and not api_key:
             st.markdown("""
@@ -257,7 +261,6 @@ with tab_predict:
                 Masukkan Hugging Face API Key di atas untuk memulai klasifikasi.
             </div>
             """, unsafe_allow_html=True)
-
         else:
             st.markdown("""
             <div class="info-box">
@@ -330,9 +333,9 @@ Aplikasi ini merupakan implementasi model CNN (Convolutional Neural Network)
 dengan berbagai teknik optimasi untuk klasifikasi gambar ke dalam 10 kelas objek.
 
 **Arsitektur Model**
-- Base Model: MobileNetV2 + ViT (Vision Transformer) fine-tuned pada CIFAR-10
+- Base Model: ViT (Vision Transformer) fine-tuned pada CIFAR-10
 - Custom Head: GlobalAvgPool - Dense(512) - BatchNorm - Dropout - Dense(256) - BatchNorm - Dropout - Softmax
-- Total Parameter: sekitar 3 juta parameter
+- Total Parameter: sekitar 86 juta parameter
 
 **Dataset**
 - CIFAR-10: 60.000 gambar, 10 kelas
